@@ -8,6 +8,6 @@ WORKDIR /app
 
 COPY . /app
 
-RUN g++ -std=c++20 -I include src/utils.cpp src/reciever.cpp main.cpp -o /app/main
+RUN g++ -std=c++20 -I include src/utils.cpp src/reciever.cpp src/sender.cpp main.cpp -o /app/main
 
 ENTRYPOINT ["/app/main"]

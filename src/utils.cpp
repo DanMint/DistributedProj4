@@ -35,7 +35,7 @@ std::string Utils::getIpOfBoostrapServer() {
 }
 
 bool Utils::clientConnectionToServer(const int &sock, const std::string &bootstrapServerIp) {
-    fcntl(sock, F_SETFL, O_NONBLOCK);
+    // REMOVED: fcntl(sock, F_SETFL, O_NONBLOCK);  // Don't set non-blocking here!
 
     while (true) {
         sockaddr_in server{};
@@ -43,11 +43,16 @@ bool Utils::clientConnectionToServer(const int &sock, const std::string &bootstr
         server.sin_port = htons(8080);
         if (inet_pton(AF_INET, bootstrapServerIp.c_str(), &server.sin_addr) <= 0) {
             std::cout << "Invalid server address, server not up yet.. \n";
+            sleep(1);
             continue;
         }
 
-        if (connect(sock, (sockaddr*)&server, sizeof(server)) == 0) 
+        // Try to connect with blocking socket
+        if (connect(sock, (sockaddr*)&server, sizeof(server)) == 0) {
+            // Connection successful! NOW set it to non-blocking
+            fcntl(sock, F_SETFL, O_NONBLOCK);
             break;
+        }
         
         std::cerr << "Connection failed, retrying...\n";
         sleep(1);
@@ -66,8 +71,35 @@ void Utils::setUpServersTcp(const int &sock) {
     addr.sin_port = htons(8080);
     addr.sin_addr.s_addr = INADDR_ANY;
 
-    bind(sock, (sockaddr*)&addr, sizeof(addr));
-    listen(sock, 1);
+    if (bind(sock, (sockaddr*)&addr, sizeof(addr)) < 0) {
+        std::cout << "Bind failed: " << strerror(errno) << std::endl;
+        return;
+    }
+    
+    if (listen(sock, 10) < 0) {  // Changed from 1 to 10
+        std::cout << "Listen failed: " << strerror(errno) << std::endl;
+        return;
+    }
+    
     fcntl(sock, F_SETFL, O_NONBLOCK);
     std::cout << "Server listening on port 8080...\n";
+}
+
+std::string Utils::removeNFromContainerID(std::string copyOfContainerID) {
+    if (copyOfContainerID.empty() || copyOfContainerID[0] != 'n')
+        return "";
+    return copyOfContainerID.substr(1);
+}
+
+void Utils::createPeer(Peer &peer, int argc, char* argv[]) {
+    for (int argIndex = 1; argIndex < argc; argIndex++) {
+        if (std::strcmp(argv[argIndex], "-d") == 0) {
+            if (argIndex + 1 < argc) {
+                int delay = std::atoi(argv[argIndex + 1]);
+                std::cerr << "Sleeping for " << delay << " seconds before starting..." << std::endl;  
+                sleep(delay);
+                argIndex++; 
+            }
+        }
+    }
 }
