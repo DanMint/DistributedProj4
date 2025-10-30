@@ -17,7 +17,6 @@ int main(int argc, char *argv[]) {
     const std::string containerID = Utils::getContainerID();
 
     // create socket for TCP connections
-    const int port = 12345;
     int sock = socket(AF_INET, SOCK_STREAM, 0);
     
     if (containerID == "bootstrap") {
@@ -35,16 +34,30 @@ int main(int argc, char *argv[]) {
         recieverThread.join();
     }
     else {
+        // Parse command line arguments and apply delay
         Peer peer;
         Utils::createPeer(peer, argc, argv);
+        
         std::cout << "IM PEER" << std::endl;
         const std::string &bootstrapServerIp = Utils::getIpOfBoostrapServer();
         Utils::clientConnectionToServer(sock, bootstrapServerIp);
 
+        // Send peerID to bootstrap
         Sender sender(containerID, sock, bootstrapServerIp);
         std::thread senderThread([&]{ sender.start(); });
+        
+        // Create dummy maps for peer receiver (not used on peer side)
+        std::unordered_map<int, int> clientIdToSocket;
+        std::mutex clientIdToSocketMutex;
+        std::vector<Peer> ring;
+        std::mutex ringMutex;
+        
+        // Start receiver to listen for UPDATE messages from bootstrap
+        Reciever reciever(containerID, sock, clientIdToSocket, clientIdToSocketMutex, ring, ringMutex);
+        std::thread recieverThread([&]{ reciever.start(); });
+        
+        // Wait for threads
         senderThread.join();
-
-        while(true);
+        recieverThread.join();
     }
 }
