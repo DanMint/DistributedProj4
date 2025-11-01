@@ -6,6 +6,7 @@
 #include <thread>
 #include <vector>
 #include <mutex>
+#include <set>
 
 #include "peer.h"
 
@@ -17,28 +18,43 @@ public:
              std::unordered_map<int, int> &clientIdToSocket, 
              std::mutex &clientIdToSocketMutex, 
              std::vector<Peer> &ring, 
-             std::mutex &ringMutex);
+             std::mutex &ringMutex,
+             const std::string &objectsFile);
 
-    // Main entry point - decides whether to run as bootstrap or peer
+    // Main entry point
     void start();
 
 private:
     // Member variables
-    const std::string containerID;                    // Container ID (e.g., "bootstrap", "n1", "n5")
-    const int socket;                                 // Main socket for communication
-    std::unordered_map<int, int> &clientIdToSocket;  // Maps peer ID to socket fd
-    std::mutex &clientIdToSocketMutex;               // Mutex for clientIdToSocket map
-    std::vector<Peer> &ring;                         // Ring structure (mainly used by bootstrap)
-    std::mutex &ringMutex;                           // Mutex for ring vector
-    std::vector<int> clientSockets;                  // List of all connected client sockets
+    const std::string containerID;
+    const int socket;
+    std::unordered_map<int, int> &clientIdToSocket;
+    std::mutex &clientIdToSocketMutex;
+    std::vector<Peer> &ring;
+    std::mutex &ringMutex;
+    std::vector<int> clientSockets;
+    const std::string objectsFile;
+    std::set<std::pair<int, int>> storedObjects;
+    std::mutex objectsMutex;
+    int myPeerId;
+    int predecessor;
+    int successor;
+    std::unordered_map<std::string, int> requestToClientSocket; // Maps request to original client socket
+    std::mutex requestMapMutex;
 
     // Bootstrap server methods
-    void bootstrapListener();                        // Main loop for bootstrap server
-    void insertPeerIntoRing(int newPeerId);         // Add a new peer to the ring and update neighbors
-    void sendUpdateToPeer(int peerId, int pred, int succ); // Send UPDATE message to a specific peer
-
+    void bootstrapListener();
+    void insertPeerIntoRing(int newPeerId);
+    void sendUpdateToPeer(int peerId, int pred, int succ);
+    void handleClientRequest(const std::string &request, int clientSocket);
+    int findResponsiblePeer(int objectId);
+    
     // Peer methods  
-    void peerListener();                             // Main loop for peer nodes
+    void peerListener();
+    void loadObjectsFile();
+    void saveObjectsFile();
+    void printObjectsFile();
+    bool isResponsibleForObject(int objectId);
 };
 
 #endif
