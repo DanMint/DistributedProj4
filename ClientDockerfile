@@ -1,0 +1,13 @@
+FROM ubuntu:24.04
+
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY client.cpp client.h ./
+
+RUN g++ -std=c++11 -o client client.cpp
+
+ENTRYPOINT ["./client"]
