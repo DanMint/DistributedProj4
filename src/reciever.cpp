@@ -13,9 +13,17 @@
 #include <cstring>
 #include <errno.h>
 #include <sstream>
+#include <fstream>
+#include <netdb.h>
 
-Reciever::Reciever(const std::string &containerID, const int &socket, std::unordered_map<int, int> &clientIdToSocket, std::mutex &clientIdToSocketMutex, std::vector<Peer> &ring, std::mutex &ringMutex) : 
-containerID(containerID), socket(socket), clientIdToSocket(clientIdToSocket), clientIdToSocketMutex(clientIdToSocketMutex), ring(ring), ringMutex(ringMutex) {}
+Reciever::Reciever(const std::string &containerID, const int &socket, 
+                   std::unordered_map<int, int> &clientIdToSocket, 
+                   std::mutex &clientIdToSocketMutex, 
+                   std::vector<Peer> &ring, std::mutex &ringMutex,
+                   const std::string &objectsFile) : 
+    containerID(containerID), socket(socket), clientIdToSocket(clientIdToSocket), 
+    clientIdToSocketMutex(clientIdToSocketMutex), ring(ring), ringMutex(ringMutex),
+    objectsFile(objectsFile), myPeerId(-1), predecessor(-1), successor(-1) {}
 
 void Reciever::sendUpdateToPeer(int peerId, int pred, int succ) {
     clientIdToSocketMutex.lock();
@@ -29,47 +37,113 @@ void Reciever::sendUpdateToPeer(int peerId, int pred, int succ) {
     clientIdToSocketMutex.unlock();
 }
 
+int Reciever::findResponsiblePeer(int objectId) {
+    clientIdToSocketMutex.lock();
+    std::vector<int> peerIds;
+    for (const auto& pair : clientIdToSocket) {
+        peerIds.push_back(pair.first);
+    }
+    clientIdToSocketMutex.unlock();
+    
+    if (peerIds.empty()) return -1;
+    
+    std::sort(peerIds.begin(), peerIds.end());
+    
+    // Object with ID between peer1 and peer2 is stored on peer2
+    for (size_t i = 0; i < peerIds.size(); i++) {
+        int currPeer = peerIds[i];
+        int prevPeer = peerIds[(i + peerIds.size() - 1) % peerIds.size()];
+        
+        if (prevPeer < currPeer) {
+            // Normal case: object ID between prevPeer and currPeer
+            if (objectId > prevPeer && objectId <= currPeer) {
+                return currPeer;
+            }
+        } else {
+            // Wrap-around case
+            if (objectId > prevPeer || objectId <= currPeer) {
+                return currPeer;
+            }
+        }
+    }
+    
+    return peerIds[0];
+}
+
+void Reciever::handleClientRequest(const std::string &request, int clientSocket) {
+    // Parse REQUEST:reqID,operationType,objectID,clientID
+    if (request.substr(0, 8) != "REQUEST:") return;
+    
+    std::string data = request.substr(8);
+    std::istringstream ss(data);
+    std::string reqId, opType, objectIdStr, clientIdStr;
+    
+    std::getline(ss, reqId, ',');
+    std::getline(ss, opType, ',');
+    std::getline(ss, objectIdStr, ',');
+    std::getline(ss, clientIdStr, ',');
+    
+    int objectId = std::stoi(objectIdStr);
+    int clientId = std::stoi(clientIdStr);
+    int responsiblePeer = findResponsiblePeer(objectId);
+    
+    std::cout << "Client request: " << opType << " object " << objectId 
+              << " (responsible peer: " << responsiblePeer << ")" << std::endl;
+    
+    if (responsiblePeer == -1) {
+        send(clientSocket, "-1", 2, 0);
+        return;
+    }
+    
+    // Store mapping of request to client socket
+    std::string requestKey = reqId + ":" + opType + ":" + objectIdStr + ":" + clientIdStr;
+    requestMapMutex.lock();
+    requestToClientSocket[requestKey] = clientSocket;
+    requestMapMutex.unlock();
+    
+    // Forward request to peer 1 to start ring traversal
+    clientIdToSocketMutex.lock();
+    auto it = clientIdToSocket.find(1);
+    if (it != clientIdToSocket.end()) {
+        // Format: RING:reqID:opType:objectID:clientID:responsiblePeer:startPeer
+        std::string ringMsg = "RING:" + reqId + ":" + opType + ":" + 
+                             objectIdStr + ":" + clientIdStr + ":" +
+                             std::to_string(responsiblePeer) + ":1";
+        send(it->second, ringMsg.c_str(), ringMsg.size(), 0);
+    }
+    clientIdToSocketMutex.unlock();
+}
+
 void Reciever::insertPeerIntoRing(int newPeerId) {
     ringMutex.lock();
     
-    // Get all peer IDs currently in the ring EXCEPT the new one
     std::vector<int> ringPeerIds;
     clientIdToSocketMutex.lock();
     for (const auto& pair : clientIdToSocket) {
-        if (pair.first != newPeerId) {  // Don't include the new peer yet!
+        if (pair.first != newPeerId) {
             ringPeerIds.push_back(pair.first);
         }
     }
     clientIdToSocketMutex.unlock();
     
-    // Sort the peer IDs
     std::sort(ringPeerIds.begin(), ringPeerIds.end());
     
     if (ringPeerIds.size() == 0) {
-        // First peer in the ring - points to itself
         sendUpdateToPeer(newPeerId, newPeerId, newPeerId);
     }
     else if (ringPeerIds.size() == 1) {
-        // Second peer in the ring
         int firstPeer = ringPeerIds[0];
-        
-        // Update both peers to point to each other
         sendUpdateToPeer(firstPeer, newPeerId, newPeerId);
         sendUpdateToPeer(newPeerId, firstPeer, firstPeer);
     }
     else {
-        // Three or more peers (2 existing + 1 new = 3 total)
         int n = ringPeerIds.size();
-        
-        // We need to determine where this peer fits in the circular sorted order
         int predId = -1, succId = -1;
         
-        // Check each adjacent pair in the ring to see where new peer fits
         for (int i = 0; i < n; i++) {
             int curr = ringPeerIds[i];
-            int next = ringPeerIds[(i + 1) % n];  // Wrap around
+            int next = ringPeerIds[(i + 1) % n];
             
-            // Case 1: Normal case - newPeerId goes between curr and next
             if (curr < next) {
                 if (curr < newPeerId && newPeerId < next) {
                     predId = curr;
@@ -77,9 +151,7 @@ void Reciever::insertPeerIntoRing(int newPeerId) {
                     break;
                 }
             }
-            // Case 2: Wrap-around case (curr > next means we're at the wrap point)
             else {
-                // newPeerId is either larger than curr OR smaller than next
                 if (newPeerId > curr || newPeerId < next) {
                     predId = curr;
                     succId = next;
@@ -88,29 +160,19 @@ void Reciever::insertPeerIntoRing(int newPeerId) {
             }
         }
         
-        // If still not found, it must go at the wrap-around point
         if (predId == -1) {
-            // This happens when all existing peers are equal (shouldn't happen)
-            // or when newPeerId should go between last and first
             predId = ringPeerIds[n-1];  
             succId = ringPeerIds[0];     
         }
         
-        // Send complete update to the new peer
         sendUpdateToPeer(newPeerId, predId, succId);
-        
-        // Update the predecessor's successor to point to new peer
         sendUpdateToPeer(predId, -1, newPeerId);
-        
-        // Update the successor's predecessor to point to new peer
         sendUpdateToPeer(succId, newPeerId, -1);
     }
     
-    // Add the new peer to our list for printing
     ringPeerIds.push_back(newPeerId);
     std::sort(ringPeerIds.begin(), ringPeerIds.end());
     
-    // Print the ring
     std::cout << "{RING:[";
     for (size_t i = 0; i < ringPeerIds.size(); i++) {
         std::cout << ringPeerIds[i];
@@ -125,23 +187,19 @@ void Reciever::bootstrapListener() {
     std::cout << "Bootstrap listener started" << std::endl;
     
     while (true) {
-        // Accept ALL pending connections in one go
         while (true) {
             int clientSocket = accept(socket, nullptr, nullptr);
             if (clientSocket < 0) {
                 break;
             }
             
-            // New client connected
             std::cout << "Client connected! fd=" << clientSocket << std::endl;
             
-            // Make client socket non-blocking
             int flags = fcntl(clientSocket, F_GETFL, 0);
             fcntl(clientSocket, F_SETFL, flags | O_NONBLOCK);
             clientSockets.push_back(clientSocket);
             
-            // Try to immediately receive the peerID from this new connection
-            usleep(50000); // Small delay to let the message arrive (50ms)
+            usleep(50000);
             char buffer[1024];
             ssize_t n = recv(clientSocket, buffer, sizeof(buffer) - 1, 0);
             if (n > 0) {
@@ -153,18 +211,18 @@ void Reciever::bootstrapListener() {
                     int peerId = std::stoi(peerIdStr);
                     std::cout << "Received peerID: " << peerId << " from fd=" << clientSocket << std::endl;
                     
-                    // Store the mapping
                     clientIdToSocketMutex.lock();
                     clientIdToSocket[peerId] = clientSocket;
                     clientIdToSocketMutex.unlock();
                     
-                    // Insert peer into ring and update neighbors
                     insertPeerIntoRing(peerId);
+                }
+                else if (receivedMessage.substr(0, 8) == "REQUEST:") {
+                    handleClientRequest(receivedMessage, clientSocket);
                 }
             }
         }
         
-        // Continue to check for any other messages from all clients
         char buffer[1024];
         for (const auto &cs : clientSockets) {
             ssize_t n = recv(cs, buffer, sizeof(buffer) - 1, 0);
@@ -172,7 +230,6 @@ void Reciever::bootstrapListener() {
                 buffer[n] = '\0';
                 std::string receivedMessage = buffer;
                 
-                // Handle late peerID messages
                 if (receivedMessage.size() > 7 && receivedMessage.substr(0, 7) == "peerID:") {
                     std::string peerIdStr = receivedMessage.substr(7);
                     int peerId = std::stoi(peerIdStr);
@@ -187,26 +244,154 @@ void Reciever::bootstrapListener() {
                         clientIdToSocketMutex.unlock();
                     }
                 }
+                else if (receivedMessage.substr(0, 8) == "REQUEST:") {
+                    handleClientRequest(receivedMessage, cs);
+                }
+                else if (receivedMessage.substr(0, 11) == "OBJ_STORED:") {
+                    // Peer confirmed storage, relay to client
+                    std::string data = receivedMessage.substr(11);
+                    std::istringstream ss(data);
+                    std::string reqId, objId, cliId, peerId;
+                    std::getline(ss, reqId, ':');
+                    std::getline(ss, objId, ':');
+                    std::getline(ss, cliId, ':');
+                    std::getline(ss, peerId, ':');
+                    
+                    std::string requestKey = reqId + ":STORE:" + objId + ":" + cliId;
+                    requestMapMutex.lock();
+                    auto it = requestToClientSocket.find(requestKey);
+                    if (it != requestToClientSocket.end()) {
+                        send(it->second, receivedMessage.c_str(), receivedMessage.size(), 0);
+                        requestToClientSocket.erase(it);
+                    }
+                    requestMapMutex.unlock();
+                }
+                else if (receivedMessage.substr(0, 10) == "OBJ_FOUND:") {
+                    std::string data = receivedMessage.substr(10);
+                    std::istringstream ss(data);
+                    std::string reqId, objId, cliId;
+                    std::getline(ss, reqId, ':');
+                    std::getline(ss, objId, ':');
+                    std::getline(ss, cliId, ':');
+                    
+                    std::string requestKey = reqId + ":RETRIEVE:" + objId + ":" + cliId;
+                    requestMapMutex.lock();
+                    auto it = requestToClientSocket.find(requestKey);
+                    if (it != requestToClientSocket.end()) {
+                        send(it->second, "OBJ_FOUND", 9, 0);
+                        requestToClientSocket.erase(it);
+                    }
+                    requestMapMutex.unlock();
+                }
+                else if (receivedMessage.substr(0, 10) == "NOT_FOUND:") {
+                    std::string data = receivedMessage.substr(10);
+                    std::istringstream ss(data);
+                    std::string reqId, objId, cliId;
+                    std::getline(ss, reqId, ':');
+                    std::getline(ss, objId, ':');
+                    std::getline(ss, cliId, ':');
+                    
+                    std::string requestKey = reqId + ":RETRIEVE:" + objId + ":" + cliId;
+                    requestMapMutex.lock();
+                    auto it = requestToClientSocket.find(requestKey);
+                    if (it != requestToClientSocket.end()) {
+                        send(it->second, "-1", 2, 0);
+                        requestToClientSocket.erase(it);
+                    }
+                    requestMapMutex.unlock();
+                }
+                else if (receivedMessage.substr(0, 8) == "FORWARD:") {
+                    // Forward message to next peer in ring
+                    std::string data = receivedMessage.substr(8);
+                    std::istringstream ss(data);
+                    std::string nextPeerStr;
+                    std::getline(ss, nextPeerStr, ':');
+                    int nextPeer = std::stoi(nextPeerStr);
+                    
+                    std::string forwardData = data.substr(nextPeerStr.length() + 1);
+                    
+                    clientIdToSocketMutex.lock();
+                    auto it = clientIdToSocket.find(nextPeer);
+                    if (it != clientIdToSocket.end()) {
+                        send(it->second, forwardData.c_str(), forwardData.size(), 0);
+                    }
+                    clientIdToSocketMutex.unlock();
+                }
             }
         }
         
-        // Small delay to prevent CPU spinning
-        usleep(200000); // 200ms
+        usleep(200000);
+    }
+}
+
+void Reciever::loadObjectsFile() {
+    if (objectsFile.empty()) return;
+    
+    std::ifstream file(objectsFile);
+    if (!file.is_open()) {
+        std::cout << "Could not open objects file: " << objectsFile << std::endl;
+        return;
+    }
+    
+    std::string line;
+    while (std::getline(file, line)) {
+        size_t pos = line.find("::");
+        if (pos != std::string::npos) {
+            int clientId = std::stoi(line.substr(0, pos));
+            int objectId = std::stoi(line.substr(pos + 2));
+            storedObjects.insert({clientId, objectId});
+        }
+    }
+    file.close();
+    
+    std::cout << "Loaded " << storedObjects.size() << " objects from file" << std::endl;
+}
+
+void Reciever::saveObjectsFile() {
+    if (objectsFile.empty()) return;
+    
+    std::ofstream file(objectsFile);
+    if (!file.is_open()) {
+        std::cout << "Could not open objects file for writing: " << objectsFile << std::endl;
+        return;
+    }
+    
+    for (const auto& obj : storedObjects) {
+        file << obj.first << "::" << obj.second << std::endl;
+    }
+    file.close();
+}
+
+void Reciever::printObjectsFile() {
+    std::cout << "Objects stored at peer " << myPeerId << ":" << std::endl;
+    for (const auto& obj : storedObjects) {
+        std::cout << obj.first << "::" << obj.second << std::endl;
+    }
+}
+
+bool Reciever::isResponsibleForObject(int objectId) {
+    // Check if this peer is responsible for the object
+    // Object between predecessor and this peer is stored on this peer
+    if (predecessor < myPeerId) {
+        return objectId > predecessor && objectId <= myPeerId;
+    } else {
+        // Wrap-around case
+        return objectId > predecessor || objectId <= myPeerId;
     }
 }
 
 void Reciever::peerListener() {
-    // Extract peer ID from container ID
     std::string peerIdStr = Utils::removeNFromContainerID(containerID);
     if (peerIdStr.empty()) {
         std::cout << "Error: Could not extract peer ID from container ID" << std::endl;
         return;
     }
-    int myPeerId = std::stoi(peerIdStr);
+    myPeerId = std::stoi(peerIdStr);
     
-    // Initialize predecessor and successor to self
-    int predecessor = myPeerId;
-    int successor = myPeerId;
+    predecessor = myPeerId;
+    successor = myPeerId;
+    
+    loadObjectsFile();
     
     std::cout << "Peer " << myPeerId << " listener started" << std::endl;
     
@@ -218,11 +403,9 @@ void Reciever::peerListener() {
             buffer[n] = '\0';
             std::string receivedMessage = buffer;
             
-            // Handle UPDATE message from bootstrap
             if (receivedMessage.size() > 7 && receivedMessage.substr(0, 7) == "UPDATE:") {
                 std::string updateData = receivedMessage.substr(7);
                 
-                // Parse pred,succ
                 size_t commaPos = updateData.find(',');
                 if (commaPos != std::string::npos) {
                     std::string predStr = updateData.substr(0, commaPos);
@@ -231,35 +414,91 @@ void Reciever::peerListener() {
                     int newPred = std::stoi(predStr);
                     int newSucc = std::stoi(succStr);
                     
-                    // Update predecessor if not -1
                     if (newPred != -1) {
                         predecessor = newPred;
                     }
                     
-                    // Update successor if not -1
                     if (newSucc != -1) {
                         successor = newSucc;
                     }
                     
-                    // Print current state as required by assignment
                     std::cout << "{peer_id:" << myPeerId 
                               << ", predecessor:" << predecessor 
                               << ", successor:" << successor << "}" << std::endl;
                 }
             }
+            else if (receivedMessage.substr(0, 5) == "RING:") {
+                // Format: RING:reqID:opType:objectID:clientID:responsiblePeer:startPeer
+                std::string data = receivedMessage.substr(5);
+                std::istringstream ss(data);
+                std::string reqId, opType, objectIdStr, clientIdStr, responsiblePeerStr, startPeerStr;
+                
+                std::getline(ss, reqId, ':');
+                std::getline(ss, opType, ':');
+                std::getline(ss, objectIdStr, ':');
+                std::getline(ss, clientIdStr, ':');
+                std::getline(ss, responsiblePeerStr, ':');
+                std::getline(ss, startPeerStr, ':');
+                
+                int objectId = std::stoi(objectIdStr);
+                int clientId = std::stoi(clientIdStr);
+                int responsiblePeer = std::stoi(responsiblePeerStr);
+                int startPeer = std::stoi(startPeerStr);
+                
+                // Check if we're back at the start peer after going around the ring
+                if (opType == "RETRIEVE" && myPeerId == startPeer && responsiblePeer == -1) {
+                    // We've gone around the entire ring without finding the object
+                    std::string response = "NOT_FOUND:" + reqId + ":" + objectIdStr + ":" + clientIdStr;
+                    send(socket, response.c_str(), response.size(), 0);
+                }
+                else if (myPeerId == responsiblePeer) {
+                    // This peer is responsible
+                    if (opType == "STORE") {
+                        objectsMutex.lock();
+                        storedObjects.insert({clientId, objectId});
+                        objectsMutex.unlock();
+                        
+                        saveObjectsFile();
+                        printObjectsFile();
+                        
+                        std::string response = "OBJ_STORED:" + reqId + ":" + objectIdStr + ":" + 
+                                             clientIdStr + ":" + std::to_string(myPeerId);
+                        send(socket, response.c_str(), response.size(), 0);
+                    }
+                    else if (opType == "RETRIEVE") {
+                        objectsMutex.lock();
+                        bool found = storedObjects.find({clientId, objectId}) != storedObjects.end();
+                        objectsMutex.unlock();
+                        
+                        if (found) {
+                            std::string response = "OBJ_FOUND:" + reqId + ":" + objectIdStr + ":" + clientIdStr;
+                            send(socket, response.c_str(), response.size(), 0);
+                        } else {
+                            // Object not found at responsible peer, continue searching through entire ring
+                            // Mark that we didn't find it by setting responsiblePeer to -1
+                            std::string forwardMsg = "FORWARD:" + std::to_string(successor) + ":RING:" + 
+                                                    reqId + ":" + opType + ":" + objectIdStr + ":" + 
+                                                    clientIdStr + ":-1:" + startPeerStr;
+                            send(socket, forwardMsg.c_str(), forwardMsg.size(), 0);
+                        }
+                    }
+                } else {
+                    // Forward to successor
+                    std::string forwardMsg = "FORWARD:" + std::to_string(successor) + ":" + receivedMessage;
+                    send(socket, forwardMsg.c_str(), forwardMsg.size(), 0);
+                }
+            }
         } else if (n == 0) {
-            // Connection closed
             std::cout << "Connection to bootstrap closed" << std::endl;
             break;
         } else {
-            // Error or would block
             if (errno != EAGAIN && errno != EWOULDBLOCK) {
                 std::cout << "Receive error: " << strerror(errno) << std::endl;
                 break;
             }
         }
         
-        usleep(100000); // 100ms delay
+        usleep(100000);
     }
 }
 
@@ -268,7 +507,6 @@ void Reciever::start() {
         std::cout << "Bootstrap receiver started" << std::endl;
         bootstrapListener();
     } else {
-        // This is a peer node
         peerListener();
     }
 }
