@@ -445,7 +445,13 @@ void Reciever::peerListener() {
                 int responsiblePeer = std::stoi(responsiblePeerStr);
                 int startPeer = std::stoi(startPeerStr);
                 
-                if (myPeerId == responsiblePeer) {
+                // Check if we're back at the start peer after going around the ring
+                if (opType == "RETRIEVE" && myPeerId == startPeer && responsiblePeer == -1) {
+                    // We've gone around the entire ring without finding the object
+                    std::string response = "NOT_FOUND:" + reqId + ":" + objectIdStr + ":" + clientIdStr;
+                    send(socket, response.c_str(), response.size(), 0);
+                }
+                else if (myPeerId == responsiblePeer) {
                     // This peer is responsible
                     if (opType == "STORE") {
                         objectsMutex.lock();
@@ -468,25 +474,18 @@ void Reciever::peerListener() {
                             std::string response = "OBJ_FOUND:" + reqId + ":" + objectIdStr + ":" + clientIdStr;
                             send(socket, response.c_str(), response.size(), 0);
                         } else {
-                            // Check if we've gone around the entire ring
-                            if (successor == startPeer) {
-                                std::string response = "NOT_FOUND:" + reqId + ":" + objectIdStr + ":" + clientIdStr;
-                                send(socket, response.c_str(), response.size(), 0);
-                            } else {
-                                // Forward to successor
-                                std::string forwardMsg = "FORWARD:" + std::to_string(successor) + ":RING:" + 
-                                                        reqId + ":" + opType + ":" + objectIdStr + ":" + 
-                                                        clientIdStr + ":" + responsiblePeerStr + ":" + startPeerStr;
-                                send(socket, forwardMsg.c_str(), forwardMsg.size(), 0);
-                            }
+                            // Object not found at responsible peer, continue searching through entire ring
+                            // Mark that we didn't find it by setting responsiblePeer to -1
+                            std::string forwardMsg = "FORWARD:" + std::to_string(successor) + ":RING:" + 
+                                                    reqId + ":" + opType + ":" + objectIdStr + ":" + 
+                                                    clientIdStr + ":-1:" + startPeerStr;
+                            send(socket, forwardMsg.c_str(), forwardMsg.size(), 0);
                         }
                     }
                 } else {
                     // Forward to successor
-                    if (successor != startPeer) {
-                        std::string forwardMsg = "FORWARD:" + std::to_string(successor) + ":" + receivedMessage;
-                        send(socket, forwardMsg.c_str(), forwardMsg.size(), 0);
-                    }
+                    std::string forwardMsg = "FORWARD:" + std::to_string(successor) + ":" + receivedMessage;
+                    send(socket, forwardMsg.c_str(), forwardMsg.size(), 0);
                 }
             }
         } else if (n == 0) {
