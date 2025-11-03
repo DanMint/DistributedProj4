@@ -422,7 +422,7 @@ void Reciever::peerListener() {
                         successor = newSucc;
                     }
                     
-                    std::cout << "{peer_id:" << myPeerId 
+                    std::cerr << "{peer_id:" << myPeerId 
                               << ", predecessor:" << predecessor 
                               << ", successor:" << successor << "}" << std::endl;
                 }
