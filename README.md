@@ -2,7 +2,7 @@
 
 ## Project structure
 
-The project consists of an include folder with all of the header files, a src folder with most of the cpp files (apart from main.cpp which is in the main), the docker compose files (4 in total), dockerfile, main.cpp, and a README.md.
+The project consists of an include folder with all of the header files, a src folder with most of the cpp files (apart from main.cpp which is in the main), the docker compose files, dockerfile, main.cpp, makefile and a README.md.
 
 ## How to run:
 cd ./project4
@@ -23,3 +23,6 @@ make Run-Testcase4
 
 ### To run test 5
 make Run-Testcase5
+
+### Additional Information
+Form test cases 3, 4 and 5 I have implemneted my own STORE, RETREIVE and NOT FOUND tests as the docker compose files dont indicate what to do. Hence this function Client::runTestCase(). 
