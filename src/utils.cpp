@@ -27,7 +27,6 @@ std::string Utils::getIpOfBoostrapServer() {
             continue;
         }
         
-        std::cout << "HELLO" << std::endl;
         struct in_addr addr;
         memcpy(&addr, host_entry->h_addr_list[0], sizeof(struct in_addr));
         return std::string(inet_ntoa(addr));
@@ -58,7 +57,6 @@ bool Utils::clientConnectionToServer(const int &sock, const std::string &bootstr
         sleep(1);
     }
 
-    std::cout << "Client TCP started \n";
     return true;
 }
 
@@ -82,7 +80,6 @@ void Utils::setUpServersTcp(const int &sock) {
     }
     
     fcntl(sock, F_SETFL, O_NONBLOCK);
-    std::cout << "Server listening on port 8080...\n";
 }
 
 std::string Utils::removeNFromContainerID(std::string copyOfContainerID) {

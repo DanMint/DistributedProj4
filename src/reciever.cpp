@@ -32,7 +32,6 @@ void Reciever::sendUpdateToPeer(int peerId, int pred, int succ) {
         int peerSocket = it->second;
         std::string message = "UPDATE:" + std::to_string(pred) + "," + std::to_string(succ);
         send(peerSocket, message.c_str(), message.size(), 0);
-        std::cout << "Sent update to peer " << peerId << ": pred=" << pred << ", succ=" << succ << std::endl;
     }
     clientIdToSocketMutex.unlock();
 }
@@ -184,16 +183,12 @@ void Reciever::insertPeerIntoRing(int newPeerId) {
 }
 
 void Reciever::bootstrapListener() {
-    std::cout << "Bootstrap listener started" << std::endl;
-    
     while (true) {
         while (true) {
             int clientSocket = accept(socket, nullptr, nullptr);
             if (clientSocket < 0) {
                 break;
             }
-            
-            std::cout << "Client connected! fd=" << clientSocket << std::endl;
             
             int flags = fcntl(clientSocket, F_GETFL, 0);
             fcntl(clientSocket, F_SETFL, flags | O_NONBLOCK);
@@ -209,7 +204,6 @@ void Reciever::bootstrapListener() {
                 if (receivedMessage.size() > 7 && receivedMessage.substr(0, 7) == "peerID:") {
                     std::string peerIdStr = receivedMessage.substr(7);
                     int peerId = std::stoi(peerIdStr);
-                    std::cout << "Received peerID: " << peerId << " from fd=" << clientSocket << std::endl;
                     
                     clientIdToSocketMutex.lock();
                     clientIdToSocket[peerId] = clientSocket;
@@ -343,8 +337,6 @@ void Reciever::loadObjectsFile() {
         }
     }
     file.close();
-    
-    std::cout << "Loaded " << storedObjects.size() << " objects from file" << std::endl;
 }
 
 void Reciever::saveObjectsFile() {
@@ -445,15 +437,9 @@ void Reciever::peerListener() {
                 int responsiblePeer = std::stoi(responsiblePeerStr);
                 int startPeer = std::stoi(startPeerStr);
                 
-                // Check if we're back at the start peer after going around the ring
-                if (opType == "RETRIEVE" && myPeerId == startPeer && responsiblePeer == -1) {
-                    // We've gone around the entire ring without finding the object
-                    std::string response = "NOT_FOUND:" + reqId + ":" + objectIdStr + ":" + clientIdStr;
-                    send(socket, response.c_str(), response.size(), 0);
-                }
-                else if (myPeerId == responsiblePeer) {
-                    // This peer is responsible
-                    if (opType == "STORE") {
+                if (opType == "STORE") {
+                    if (myPeerId == responsiblePeer) {
+                        // This peer is responsible for storing
                         objectsMutex.lock();
                         storedObjects.insert({clientId, objectId});
                         objectsMutex.unlock();
@@ -464,28 +450,36 @@ void Reciever::peerListener() {
                         std::string response = "OBJ_STORED:" + reqId + ":" + objectIdStr + ":" + 
                                              clientIdStr + ":" + std::to_string(myPeerId);
                         send(socket, response.c_str(), response.size(), 0);
+                    } else {
+                        // Forward to successor
+                        std::string forwardMsg = "FORWARD:" + std::to_string(successor) + ":" + receivedMessage;
+                        send(socket, forwardMsg.c_str(), forwardMsg.size(), 0);
                     }
-                    else if (opType == "RETRIEVE") {
-                        objectsMutex.lock();
-                        bool found = storedObjects.find({clientId, objectId}) != storedObjects.end();
-                        objectsMutex.unlock();
-                        
-                        if (found) {
-                            std::string response = "OBJ_FOUND:" + reqId + ":" + objectIdStr + ":" + clientIdStr;
-                            send(socket, response.c_str(), response.size(), 0);
-                        } else {
-                            // Object not found at responsible peer, continue searching through entire ring
-                            // Mark that we didn't find it by setting responsiblePeer to -1
-                            std::string forwardMsg = "FORWARD:" + std::to_string(successor) + ":RING:" + 
-                                                    reqId + ":" + opType + ":" + objectIdStr + ":" + 
-                                                    clientIdStr + ":-1:" + startPeerStr;
-                            send(socket, forwardMsg.c_str(), forwardMsg.size(), 0);
-                        }
+                }
+                else if (opType == "RETRIEVE") {
+                    // First check if this peer has the object
+                    objectsMutex.lock();
+                    bool found = storedObjects.find({clientId, objectId}) != storedObjects.end();
+                    objectsMutex.unlock();
+                    
+                    if (found) {
+                        // Found the object! Send success response
+                        std::string response = "OBJ_FOUND:" + reqId + ":" + objectIdStr + ":" + clientIdStr;
+                        send(socket, response.c_str(), response.size(), 0);
                     }
-                } else {
-                    // Forward to successor
-                    std::string forwardMsg = "FORWARD:" + std::to_string(successor) + ":" + receivedMessage;
-                    send(socket, forwardMsg.c_str(), forwardMsg.size(), 0);
+                    else if (myPeerId == startPeer && responsiblePeer == -1) {
+                        // We've completed a full circle without finding the object
+                        std::string response = "NOT_FOUND:" + reqId + ":" + objectIdStr + ":" + clientIdStr;
+                        send(socket, response.c_str(), response.size(), 0);
+                    }
+                    else {
+                        // Continue searching through the ring
+                        std::string newResponsiblePeer = (myPeerId == responsiblePeer) ? "-1" : responsiblePeerStr;
+                        std::string forwardMsg = "FORWARD:" + std::to_string(successor) + ":RING:" + 
+                                                reqId + ":" + opType + ":" + objectIdStr + ":" + 
+                                                clientIdStr + ":" + newResponsiblePeer + ":" + startPeerStr;
+                        send(socket, forwardMsg.c_str(), forwardMsg.size(), 0);
+                    }
                 }
             }
         } else if (n == 0) {

@@ -34,8 +34,6 @@ void Client::connectToBootstrap() {
         std::cerr << "Failed to connect to bootstrap" << std::endl;
         return;
     }
-    
-    std::cout << "Client connected to bootstrap" << std::endl;
 }
 
 void Client::sendStoreRequest(int objectId, int clientId) {
@@ -86,17 +84,17 @@ void Client::runTestCase() {
     if (testcase == "3") {
         // Test case 3: Store an object
         std::cout << "Running Test Case 3: Store object" << std::endl;
-        sendStoreRequest(42, 10);
+        sendStoreRequest(42, 10);  // Store object 42 for client 10
     }
     else if (testcase == "4") {
         // Test case 4: Retrieve an existing object
         std::cout << "Running Test Case 4: Retrieve existing object" << std::endl;
-        sendRetrieveRequest(42, 10);
+        sendRetrieveRequest(45, 1);  // Retrieve object 45 for client 1 (which exists in objects50.txt)
     }
     else if (testcase == "5") {
         // Test case 5: Retrieve a non-existing object
         std::cout << "Running Test Case 5: Retrieve non-existing object" << std::endl;
-        sendRetrieveRequest(99, 10);
+        sendRetrieveRequest(999, 999);  // Try to retrieve object that doesn't exist
     }
     else {
         std::cout << "Unknown test case: " << testcase << std::endl;

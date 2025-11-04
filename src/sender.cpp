@@ -12,17 +12,11 @@ containerID(containerID), socket(socket), bootstrapServerIp(bootstrapServerIp)
 {}
 
 void Sender::peerSender() {
-    std::cout << "Sending to server \n";
     std::string message = "peerID:" + Utils::removeNFromContainerID(containerID);
     send(socket, message.c_str(), message.size(), 0);
     sleep(5);
 }
 
 void Sender::start() {
-    if (containerID == "bootstrap") {
-        std::cout << "IM SENDER BOOT \n";
-    }
-    else {
-        Sender::peerSender();
-    }
+    Sender::peerSender();
 }

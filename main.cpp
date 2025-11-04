@@ -24,7 +24,6 @@ int main(int argc, char *argv[]) {
     int sock = socket(AF_INET, SOCK_STREAM, 0);
     
     if (containerID == "bootstrap") {
-        std::cout << "IM BOOTSTRAP HELLO!!" << std::endl;
         Utils::setUpServersTcp(sock);
 
         std::unordered_map<int, int> clientIdToSocket;
@@ -56,7 +55,7 @@ int main(int argc, char *argv[]) {
         }
         
         if (delay > 0) {
-            std::cout << "Client sleeping for " << delay << " seconds..." << std::endl;
+            std::cerr << "Client sleeping for " << delay << " seconds..." << std::endl;
             sleep(delay);
         }
         
@@ -76,7 +75,6 @@ int main(int argc, char *argv[]) {
         
         Utils::createPeer(peer, argc, argv);
         
-        std::cout << "IM PEER" << std::endl;
         const std::string &bootstrapServerIp = Utils::getIpOfBoostrapServer();
         Utils::clientConnectionToServer(sock, bootstrapServerIp);
 
